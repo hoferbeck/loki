@@ -1,9 +1,13 @@
 package distributor
 
 import (
+	"context"
 	"hash/fnv"
 	"sync"
 	"time"
+
+	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
 )
 
 const (
@@ -29,6 +33,8 @@ type segmentationKeyRateStore struct {
 
 	// numBuckets is calculated as the window divided by the bucketSize.
 	numBuckets int
+
+	logger log.Logger
 }
 
 type segmentationKeyRateBucket struct {
@@ -37,13 +43,14 @@ type segmentationKeyRateBucket struct {
 }
 
 // newSegmentationKeyRateStore returns a new rate store for segmentation keys.
-func newSegmentationKeyRateStore(window, bucketSize time.Duration) *segmentationKeyRateStore {
+func newSegmentationKeyRateStore(window, bucketSize time.Duration, logger log.Logger) *segmentationKeyRateStore {
 	return &segmentationKeyRateStore{
 		stripes:    make([]map[string]map[uint64][]segmentationKeyRateBucket, segmentationKeyRateStoreNumStripes),
 		locks:      make([]sync.Mutex, segmentationKeyRateStoreNumStripes),
 		window:     window,
 		bucketSize: bucketSize,
 		numBuckets: int(window / bucketSize),
+		logger:     logger,
 	}
 }
 
@@ -107,6 +114,21 @@ func (s *segmentationKeyRateStore) EvictExpired(now time.Time) int {
 		s.locks[i].Unlock()
 	}
 	return evicted
+}
+
+// Runs the eviction loop.
+func (s *segmentationKeyRateStore) Run(ctx context.Context) error {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			evicted := s.EvictExpired(time.Now())
+			level.Info(s.logger).Log("msg", "evicted expired segmentation key rates", "count", evicted)
+		}
+	}
 }
 
 // averageRate returns the average rate for buckets in the window using a

@@ -408,7 +408,8 @@ func New(
 	d.rateStore = rs
 
 	if cfg.KafkaEnabled && cfg.DataObjTeeConfig.Enabled {
-		segmentationKeyStoreStore := newSegmentationKeyRateStore(5*time.Minute, time.Minute)
+		segmentationKeyRateStore := newSegmentationKeyRateStore(5*time.Minute, time.Minute, logger)
+		go segmentationKeyRateStore.Run(context.TODO())
 		resolver := NewSegmentationPartitionResolver(
 			uint64(cfg.DataObjTeeConfig.PerPartitionRateBytes),
 			dataObjConsumerPartitionRing,
@@ -418,7 +419,7 @@ func New(
 		dataObjTee, err := NewDataObjTee(
 			&cfg.DataObjTeeConfig,
 			resolver,
-			segmentationKeyStoreStore,
+			segmentationKeyRateStore,
 			distributorsRing,
 			overrides,
 			kafkaWriter,
