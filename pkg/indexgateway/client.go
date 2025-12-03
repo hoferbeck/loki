@@ -8,9 +8,9 @@ import (
 	"io"
 	"math/rand"
 	"slices"
-	"strings"
 	"time"
 
+	"github.com/cespare/xxhash/v2"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/gogo/status"
@@ -34,6 +34,7 @@ import (
 	"github.com/grafana/loki/v3/pkg/storage/stores/series/index"
 	"github.com/grafana/loki/v3/pkg/util/constants"
 	"github.com/grafana/loki/v3/pkg/util/discovery"
+	"github.com/grafana/loki/v3/pkg/util/jumphash"
 )
 
 const (
@@ -496,9 +497,8 @@ func (s *GatewayClient) poolDoWithStrategy(
 
 	if s.cfg.Mode == SimpleMode {
 		slices.Sort(addrs)
-		allAddr := strings.Join(addrs, ",")
 		addrs = filterServerList(addrs)
-		level.Debug(s.logger).Log("msg", "filtered list of index gateway instances", "all", allAddr, "filtered", strings.Join(addrs, ","))
+		addrs = s.jumpHashShuffleSharding(userID, addrs)
 	}
 
 	// shuffle addresses to make sure we don't always access the same Index Gateway instances in sequence for same tenant.
@@ -533,6 +533,31 @@ func (s *GatewayClient) poolDoWithStrategy(
 	}
 
 	return lastErr
+}
+
+func (s *GatewayClient) jumpHashShuffleSharding(tenant string, addrs []string) []string {
+	if len(addrs) <= 1 {
+		return addrs
+	}
+
+	maxAvailableGateways := len(addrs)
+
+	// TODO(chaudum): Get factor from limits
+	// f := s.limits.IndexGatewayShardSize(tenant)
+	f := 0.5
+	numUserGateways := int(float64(maxAvailableGateways) * f)
+	if numUserGateways == maxAvailableGateways {
+		return addrs
+	}
+
+	result := make([]string, 0, numUserGateways)
+	for i := range numUserGateways {
+		cs := xxhash.Sum64String(fmt.Sprintf("tenant:%s;shard:%d", tenant, i))
+		idx := jumphash.Hash(cs, maxAvailableGateways)
+		result = append(result, addrs[idx])
+	}
+
+	return result
 }
 
 func (s *GatewayClient) getServerAddresses(tenantID string) ([]string, error) {
